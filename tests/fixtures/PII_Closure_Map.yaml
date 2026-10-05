@@ -1,0 +1,74 @@
+# PII_Closure_Map for chora-observability domain.
+#
+# Source-of-truth: .claude/skills/account-closure-saga/SKILL.md
+# Owning team: Team 3 (Platform). Owning DB: chora_observability.
+#
+# Observability hosts TokenUsageLedger (cost ledger), AgentDecisionLog,
+# trace correlation index, budget records, mana ledger.
+#
+# Cost ledger entries are billing-grade — preserve the cost columns; only
+# tombstone the per-entry actor display.
+
+domain: chora_observability
+version: "1.0"
+
+fields_to_tokenize:
+  - table: token_usage_ledger
+    columns:
+      # Cost is regulator-relevant for billing reconciliation. Preserve
+      # all amount columns; tombstone display only.
+      - column: subject_display_name
+        strategy: tombstone_string
+        value: "Former member"
+      # tokens_in/out, model_id, agent_id, cost_micros all preserved.
+
+  - table: agent_decision_log
+    columns:
+      # IMDA D4 evidence — preserve decision facts; tombstone display.
+      - column: subject_display_name
+        strategy: tombstone_string
+        value: "Former member"
+      # decision_type, risk_tier, evidence_hash, traceparent preserved.
+
+  - table: trace_correlation_index
+    columns:
+      # trace_id ↔ subject mini-index. Subject display tombstoned;
+      # trace_id preserved for OTLP correlation.
+      - column: subject_display_name
+        strategy: tombstone_string
+        value: "Former member"
+
+  - table: budgets
+    columns:
+      - column: tenant_admin_display_name
+        strategy: tombstone_string
+        value: "Former member"
+
+  - table: mana_ledger
+    columns:
+      # Per-user mana credit/debit ledger. CASCADE drops on user closure
+      # (it IS the user's ledger). Aggregate stats survive.
+      - column: subject_display_name
+        strategy: tombstone_string
+        value: "Former member"
+
+  - table: cost_anomaly_alerts
+    columns:
+      - column: subject_display_name
+        strategy: tombstone_string
+        value: "Former member"
+
+retention_days_by_jurisdiction:
+  EU: 2557
+  SG: 2557
+  US: 1826
+  ZA: 1826
+  BR: 1826
+  default: 2557
+
+on_creator_closure:
+  # Per-user mana ledger entries CASCADE pseudonymise (ledger is user-bound).
+  # AgentDecisionLog + TokenUsageLedger entries PRESERVE_ORPHAN with
+  # tombstoned display (audit + cost reconciliation needs these to remain).
+  strategy: cascade_pseudonymise
+  show_authorship_as: "Former member"
