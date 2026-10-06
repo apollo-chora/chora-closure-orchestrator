@@ -1,109 +1,156 @@
 # chora-closure-orchestrator
 
-Closure Orchestrator for Chora: the Python LangGraph half of the federated
-account-closure saga (Tier 3 D11; Tier 2 D5 hybrid kernel). It owns the
-closure-saga lifecycle, fans out per-domain pseudonymisation requests on the
-event bus, awaits the per-domain acks, cold-archives the DEK-encrypted
-bundle, and crypto-shreds the per-user DEK — pseudonymise + crypto-shred,
-NEVER hard-delete.
+## About
 
-The service is cloud-neutral: PostgreSQL for persistence, NATS JetStream for
-events, MinIO for the cold archive, env-backed configuration for secrets. No
-cloud account or managed services (managed SQL, Pub/Sub, Secret Manager, or
-CI/CD) are required.
+`chora-closure-orchestrator` is a Python service that coordinates Chora's federated account-closure saga. It starts and advances closure workflows, fans out per-domain pseudonymisation requests, records domain acknowledgements, writes an encrypted cold archive, and crypto-shreds the per-user data-encryption key. The service exposes a small FastAPI HTTP surface and uses PostgreSQL, NATS JetStream, and MinIO for durable workflow state, events, and archive storage.
 
-## What it does
+## Quick start
 
-1. **Federated closure saga** — `POST /v1/closure/request` starts a saga
-   (grace window, default 30 days); the SagaDriver background loop advances
-   it: `CLOSING → SUSPENDED` (grace expiry) → fan-out of 10
-   `chora.{domain}.pii.pseudonymise.requested.v1` events →
-   `PSEUDONYMIZED` (all domains acked) → `COLD_ARCHIVED` →
-   `CRYPTO_SHREDDED`.
-2. **Per-domain ack federation** — domain services emit
-   `chora.{domain}.account.pseudonymised.v1`; the orchestrator subscribes
-   and records each ack on the saga. `COLD_ARCHIVED` is only reachable
-   once every required domain has acked. An ack timeout (default 24h)
-   escalates to `PSEUDONYMISE_PARTIAL` for operator attention.
-3. **Envelope encryption + crypto-shred** — per-user DEKs (32 random bytes)
-   wrapped by the master KEK (`CHORA_LOCAL_KEK`, AES-256-GCM with
-   tenant+gcid AAD) and persisted in `chora_ai_kernel.closure_user_dek_wrap`
-   (migration 0054). Crypto-shred deletes the wrapped DEK; the plaintext DEK
-   is never persisted, so prior ciphertext is permanently unrecoverable.
-4. **Transactional outbox** — every saga event is written to
-   `chora_ai_kernel.closure_outbox_events` in the same database, then
-   drained to the NATS JetStream event bus by the outbox dispatcher with
-   retry + dead-letter semantics. The 6 `chora.closure.*` lifecycle topics
-   are published as canonical Protobuf binary (vendored
-   `chora_contracts_gen` stubs); the per-domain fan-out/ack topics are JSON.
-5. **Cold archive** — the DEK-encrypted bundle is written to MinIO at
-   `{tenant_id}/{gcid}/{saga_id}.tar.gz.enc` with per-jurisdiction retention
-   metadata (SG/EU 2557 days, US/ZA/BR 1826 days).
+Requires Python 3.13 and `uv`. The project metadata and locked dependencies are in `pyproject.toml` and `uv.lock`.
 
-## Architecture
+Clone the repository and install the development environment:
 
-- **Compute**: any host running the Python venv or the container image.
-- **Database**: PostgreSQL (`chora_ai_kernel`). Schema changes live in
-  `migrations/` and are applied with the shared migration runner.
-- **Event bus**: NATS JetStream. The outbox dispatcher drains pending rows;
-  the per-domain ack consumers subscribe to the ack subjects.
-- **Object store**: MinIO (cold archive).
-- **Ports**: HTTP `:8080` (`/healthz`, `/readyz`, `/v1/closure/*`).
+```sh
+git clone https://github.com/apollo-chora/chora-closure-orchestrator.git
+cd chora-closure-orchestrator
 
-## Configuration
+uv sync --all-groups
+```
 
-Copy the example environment file:
+Copy the example environment file and configure the required deployment values:
 
 ```sh
 cp .env.example .env
 ```
 
-Important variables:
+Run the application locally:
 
-| Variable | Purpose |
-|---|---|
-| `CHORA_AI_KERNEL_PG_DSN` | DSN for the `chora_ai_kernel` database (coordinator repo + outbox + wrapped-DEK store). Alias: `CHORA_AI_KERNEL_CONNINFO`. |
-| `CHORA_AI_KERNEL_PG_DSN_SECRET_ID` | Env-backed secret alias — when set (and no direct DSN), its value IS the DSN. |
-| `CHORA_SOURCE_PROJECT` | Logical source name stamped into the event envelope; enables the outbox dispatcher (requires the DSN too). |
-| `CHORA_LOCAL_KEK` | base64-encoded 32-byte master KEK for the local KMS adapter (`openssl rand -base64 32`). |
-| `CHORA_COLD_ARCHIVE_BUCKET` | MinIO bucket for the cold archive. |
-| `CHORA_NATS_URL` | NATS broker URL (default `nats://localhost:4222`). |
-| `CHORA_MINIO_ENDPOINT` / `CHORA_MINIO_ACCESS_KEY` / `CHORA_MINIO_SECRET_KEY` / `CHORA_MINIO_SECURE` | MinIO connection for the cold-archive writer. |
-| `CLOSURE_ACK_SUBSCRIPTIONS` | Comma-joined ack topic names (default: the 10 `chora.{domain}.account.pseudonymised.v1` subjects). |
-| `CLOSURE_DRIVER_POLL_SECONDS` | Saga-driver poll interval (default 30). |
-| `CLOSURE_OUTBOX_POLL_SECONDS` | Outbox dispatcher poll interval (default 0.5). |
-| `CLOSURE_ACK_TIMEOUT_SECONDS` | SUSPENDED → PSEUDONYMISE_PARTIAL escalation (default 86400). |
-| `CHORA_CLOSURE_FAKE_ADAPTERS` | `true` forces in-memory/fake adapters (dev escape hatch; NEVER set in prod). |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP-gRPC collector endpoint for tracing (unset = no-op). |
+```sh
+uv run uvicorn chora_closure_orchestrator.main:app --host 0.0.0.0 --port 8080
+```
 
-## Endpoints
+The service listens on port `8080` by default. Check liveness:
+
+```sh
+curl -s http://localhost:8080/healthz
+```
+
+A container image can be built from the repository root:
+
+```sh
+docker build -t chora-closure-orchestrator .
+docker run --rm -p 8080:8080 --env-file .env chora-closure-orchestrator
+```
+
+The container runs as UID `65532` and starts Uvicorn on port `8080`.
+
+## Usage
+
+The service exposes three operational areas:
 
 | Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/healthz` | Liveness probe. |
-| `GET` | `/readyz` | Readiness probe (503 until adapters are configured). |
-| `POST` | `/v1/closure/request` | Start a closure saga (idempotent on saga_id). |
-| `POST` | `/v1/closure/{closure_id}/cancel` | Cancel during the grace period. |
-| `GET` | `/v1/closure/{closure_id}/status` | Current state + history + per-domain acks. |
+| --- | --- | --- |
+| `GET` | `/healthz` | Liveness probe |
+| `GET` | `/readyz` | Readiness probe |
+| `POST` | `/v1/closure/request` | Start a closure saga |
+| `POST` | `/v1/closure/{closure_id}/cancel` | Cancel a closure during the grace period |
+| `GET` | `/v1/closure/{closure_id}/status` | Read the current saga state, history, and domain acknowledgements |
 
-Auth: `Bearer <GCID>` header. Operator fast-close (`fast_close: true`)
-collapses the grace window and is restricted to `PLATFORM_OPERATOR` sessions
-(gateway-stamped `X-Chora-Role` header).
+Closure endpoints authenticate with a `Bearer <GCID>` header. Operator fast-close requests use `fast_close: true` and require the gateway to stamp `X-Chora-Role: PLATFORM_OPERATOR`.
+
+The closure request starts in `CLOSING`. The background SagaDriver advances the workflow through the grace period and, after expiry, fans out pseudonymisation requests to the configured domain subjects. Once all required domain acknowledgements have been recorded, the saga can reach `PSEUDONYMIZED`, then `COLD_ARCHIVED`, and finally `CRYPTO_SHREDDED`. The acknowledgement timeout defaults to 24 hours and can move an incomplete saga to `PSEUDONYMISE_PARTIAL`.
+
+Per-user data-encryption keys are 32-byte values wrapped by the configured master key. The local KMS adapter uses AES-256-GCM with tenant and GCID as additional authenticated data. The wrapped key is persisted in PostgreSQL; crypto-shredding removes the wrapped key so the archive ciphertext cannot be decrypted through this service.
+
+The service writes saga events to the PostgreSQL transactional outbox before publishing them to NATS JetStream. Lifecycle events under the `chora.closure.*` subjects use the vendored Protobuf bindings under `src/chora_contracts_gen`; per-domain pseudonymisation request and acknowledgement messages use JSON.
+
+The cold archive is written to MinIO. Archive objects use the key format:
+
+```text
+{tenant_id}/{gcid}/{saga_id}.tar.gz.enc
+```
+
+Retention metadata is jurisdiction-specific: Singapore and EU use 2557 days, while the US, South Africa, and Brazil use 1826 days.
+
+Configuration is environment-backed:
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `CHORA_AI_KERNEL_PG_DSN` | PostgreSQL DSN for the closure repository, outbox, and wrapped-DEK store | unset |
+| `CHORA_AI_KERNEL_CONNINFO` | Alias for the PostgreSQL DSN | unset |
+| `CHORA_AI_KERNEL_PG_DSN_SECRET_ID` | Environment-backed secret alias whose value is used as the DSN | unset |
+| `CHORA_SOURCE_PROJECT` | Logical event source name; enables the outbox dispatcher when the DSN is also configured | unset |
+| `CHORA_LOCAL_KEK` | Base64-encoded 32-byte master key for the local KMS adapter | unset |
+| `CHORA_COLD_ARCHIVE_BUCKET` | MinIO bucket for cold archives | unset |
+| `CHORA_NATS_URL` | NATS broker URL | `nats://localhost:4222` |
+| `CHORA_MINIO_ENDPOINT` | MinIO endpoint | unset |
+| `CHORA_MINIO_ACCESS_KEY` | MinIO access key | unset |
+| `CHORA_MINIO_SECRET_KEY` | MinIO secret key | unset |
+| `CHORA_MINIO_SECURE` | Whether MinIO uses TLS | unset |
+| `CLOSURE_ACK_SUBSCRIPTIONS` | Comma-separated domain acknowledgement subjects | configured ten-domain set |
+| `CLOSURE_DRIVER_POLL_SECONDS` | Saga-driver polling interval | `30` |
+| `CLOSURE_OUTBOX_POLL_SECONDS` | Outbox polling interval | `0.5` |
+| `CLOSURE_ACK_TIMEOUT_SECONDS` | Domain-ack timeout before partial escalation | `86400` |
+| `CHORA_CLOSURE_FAKE_ADAPTERS` | Forces in-memory/fake adapters for development | `false` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP/gRPC tracing endpoint | unset |
+
+For local development, `CHORA_CLOSURE_FAKE_ADAPTERS=true` switches the service to its in-memory/fake adapters. This is a development escape hatch and is not intended for production.
+
+The repository's Python console script is also available after installation:
+
+```sh
+uv run chora-closure-orchestrator
+```
 
 ## Development
 
+Run the project's checks:
+
 ```sh
-uv sync --all-groups   # or: uv sync --extra dev
-uv run pytest          # 375 tests
+uv sync --all-groups
+uv run pytest
 uv run ruff check src tests
 uv run ruff format --check src tests
 uv run mypy
 ```
 
-## Build
+The pytest configuration enables strict markers. The `integration` marker is used for end-to-end saga tests covering closure, cancellation, and compensation behavior.
+
+The package declares an 85 percent minimum coverage threshold:
 
 ```sh
-docker build -t chora-closure-orchestrator .
+uv run pytest --cov
 ```
 
-The image runs as nonroot (uid 65532) and listens on port 8080.
+The project layout is:
+
+```text
+src/chora_closure_orchestrator/
+  main.py                         FastAPI entrypoint and service startup
+  wiring.py                       Runtime adapter and saga wiring
+  adapter/
+    coldarchive/                  MinIO cold-archive adapter
+    kms/                          Envelope-encryption and key-storage adapters
+    pii_map/                      PII closure-map loading
+    postgres/                     PostgreSQL runtime helpers
+    pubsub/                       NATS subjects, subscribers, publisher, and outbox
+    repository/                   Closure repository ports and implementations
+    secrets/                      Environment-backed DSN/secret resolution
+  domain/
+    closure/                      Saga coordinator, states, and domain errors
+    state/                        Shared state types
+  orchestrators/
+    closure_graph.py              LangGraph closure workflow
+    saga_driver.py                Background saga advancement
+src/chora_contracts_gen/          Vendored generated Protobuf bindings
+config/                           PII closure configuration
+migrations/                       PostgreSQL schema migrations
+tests/
+  unit/                           Fast in-process tests
+  integration/                    End-to-end saga and infrastructure tests
+Dockerfile                        Multi-stage container build
+pyproject.toml                    Dependencies and development tooling
+uv.lock                           Locked dependency graph
+```
+
+The Docker build installs the wheel from the repository itself, including the vendored `chora_contracts_gen` package, so a sibling `chora-contracts` checkout is not required.
