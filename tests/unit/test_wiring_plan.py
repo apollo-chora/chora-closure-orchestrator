@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import pytest
 
+from chora_closure_orchestrator.adapter.pubsub.ack_consumer import (
+    ack_topic_for_domain,
+)
 from chora_closure_orchestrator.domain.closure import REQUIRED_DOMAINS
 from chora_closure_orchestrator.wiring import plan_from_env
 
@@ -50,7 +53,10 @@ class TestDefaults:
         assert p.kms_kind == "fake"
         assert p.archive_kind == "inmem"
         assert p.dispatcher_enabled is False
-        assert p.ack_subscriptions == []
+        # Adapters are all in-memory, but the ack leg is NOT optional: with
+        # no CLOSURE_ACK_SUBSCRIPTIONS override the plan still defaults to
+        # the 10 canonical per-domain ack subjects.
+        assert p.ack_subscriptions == [ack_topic_for_domain(d) for d in REQUIRED_DOMAINS]
 
     def test_poll_defaults(self) -> None:
         p = plan_from_env()
@@ -163,6 +169,40 @@ class TestRealSelection:
             "closure-ack-creation",
             "closure-ack-tenancy",
         ]
+
+    def test_ack_subscriptions_default_to_the_ten_domain_subjects(self) -> None:
+        """Deployed-stack regression: compose injects NO
+        ``CLOSURE_ACK_SUBSCRIPTIONS``, so the default MUST be the 10
+        canonical ``chora.{domain}.account.pseudonymised.v1`` subjects —
+        otherwise no DomainAckHandler is ever bound and every
+        pseudonymisation saga stalls at SUSPENDED.
+        """
+        p = plan_from_env()
+        assert p.ack_subscriptions == [ack_topic_for_domain(d) for d in REQUIRED_DOMAINS]
+        assert len(p.ack_subscriptions) == len(REQUIRED_DOMAINS) == 10
+
+    def test_default_ack_subjects_match_the_domain_publish_sites(self) -> None:
+        """The default set is exactly the subject each of the 10 domain
+        services publishes its pseudonymisation ack on (verified against
+        each service's ``TopicPseudonymiseCompleted`` constant and
+        chora-contracts ``proto/events/closure/saga.proto``)."""
+        assert plan_from_env().ack_subscriptions == [
+            "chora.creation.account.pseudonymised.v1",
+            "chora.consumption.account.pseudonymised.v1",
+            "chora.delivery.account.pseudonymised.v1",
+            "chora.sharing.account.pseudonymised.v1",
+            "chora.a2a.account.pseudonymised.v1",
+            "chora.identity.account.pseudonymised.v1",
+            "chora.tenancy.account.pseudonymised.v1",
+            "chora.governance.account.pseudonymised.v1",
+            "chora.observability.account.pseudonymised.v1",
+            "chora.notifications.account.pseudonymised.v1",
+        ]
+
+    def test_ack_subscriptions_env_override_beats_the_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CLOSURE_ACK_SUBSCRIPTIONS", "chora.identity.account.pseudonymised.v1")
+        p = plan_from_env()
+        assert p.ack_subscriptions == ["chora.identity.account.pseudonymised.v1"]
 
 
 class TestFakeOverride:

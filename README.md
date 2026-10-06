@@ -87,7 +87,7 @@ Configuration is environment-backed:
 | `CHORA_MINIO_ACCESS_KEY` | MinIO access key | unset |
 | `CHORA_MINIO_SECRET_KEY` | MinIO secret key | unset |
 | `CHORA_MINIO_SECURE` | Whether MinIO uses TLS | unset |
-| `CLOSURE_ACK_SUBSCRIPTIONS` | Comma-separated domain acknowledgement subjects | configured ten-domain set |
+| `CLOSURE_ACK_SUBSCRIPTIONS` | Comma-separated domain acknowledgement subjects (optional override; when unset, defaults to the 10 canonical `chora.{domain}.account.pseudonymised.v1` subjects derived from `REQUIRED_DOMAINS`) | ten-domain default |
 | `CLOSURE_DRIVER_POLL_SECONDS` | Saga-driver polling interval | `30` |
 | `CLOSURE_OUTBOX_POLL_SECONDS` | Outbox polling interval | `0.5` |
 | `CLOSURE_ACK_TIMEOUT_SECONDS` | Domain-ack timeout before partial escalation | `86400` |

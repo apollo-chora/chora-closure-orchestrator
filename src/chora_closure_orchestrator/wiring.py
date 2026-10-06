@@ -30,7 +30,10 @@ Env contract (cloud-neutral; compose injects every value):
 ``CHORA_MINIO_SECURE``        ``true`` for TLS (default false).
 ``CLOSURE_ACK_SUBSCRIPTIONS``  comma-joined ack topic names for the 10
                               ``chora.{domain}.account.pseudonymised.v1``
-                              ack subjects.
+                              ack subjects. When unset, the default is
+                              the 10 canonical subjects derived from
+                              ``REQUIRED_DOMAINS`` (the subjects the 10
+                              domain services actually publish).
 ``CLOSURE_DRIVER_POLL_SECONDS``    saga-driver poll (default 30).
 ``CLOSURE_OUTBOX_POLL_SECONDS``    outbox dispatcher poll (default 0.5).
 ``CLOSURE_GRACE_PERIOD_DAYS_DEFAULT``  default grace days (default 30).
@@ -48,6 +51,11 @@ import os
 import socket
 from dataclasses import dataclass, field
 from typing import Any
+
+from chora_closure_orchestrator.adapter.pubsub.ack_consumer import (
+    ack_topic_for_domain,
+)
+from chora_closure_orchestrator.domain.closure import REQUIRED_DOMAINS
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +151,16 @@ def plan_from_env() -> WiringPlan:
     project = os.getenv("CHORA_SOURCE_PROJECT", "").strip()
     kek = os.getenv("CHORA_LOCAL_KEK", "").strip()
     bucket = os.getenv("CHORA_COLD_ARCHIVE_BUCKET", "").strip()
-    subs = [s.strip() for s in os.getenv("CLOSURE_ACK_SUBSCRIPTIONS", "").split(",") if s.strip()]
+    raw_subs = os.getenv("CLOSURE_ACK_SUBSCRIPTIONS", "").strip()
+    if raw_subs:
+        subs = [s.strip() for s in raw_subs.split(",") if s.strip()]
+    else:
+        # Default: the 10 canonical per-domain ack subjects, derived from
+        # the orchestrator's REQUIRED_DOMAINS registry — the exact subjects
+        # the 10 domain services publish their pseudonymisation acks on.
+        # The deployed stack injects no override; without this default no
+        # ack subscriber is ever bound and every saga stalls at SUSPENDED.
+        subs = [ack_topic_for_domain(d) for d in REQUIRED_DOMAINS]
 
     return WiringPlan(
         repo_kind="postgres" if dsn else "inmem",
