@@ -27,6 +27,30 @@ from typing import Any
 from chora_closure_orchestrator.adapter.pubsub import protomarshal
 from chora_closure_orchestrator.adapter.pubsub.store import OutboxRow
 
+# The envelope dict is snake_case; the Go eventbus
+# (chora-common/eventbus `envelopeFromHeaders`) reads canonical `Chora-*`
+# header names and dead-letters a message whose envelope it cannot rebuild,
+# before the handler ever runs. Map to the canonical names on the wire; keys
+# absent from this map are forwarded verbatim. The internal dict keeps its
+# snake_case keys because protomarshal.encode reads them.
+_ENVELOPE_HEADER_NAMES = {
+    "event_id": "Chora-Event-Id",
+    "idempotency_key": "Chora-Idempotency-Key",
+    "tenant_id": "Chora-Tenant-Id",
+    "gcid": "Chora-Gcid",
+    "source_service": "Chora-Source-Service",
+    "source_project": "Chora-Source-Project",
+    "correlation_id": "Chora-Correlation-Id",
+    "causation_id": "Chora-Causation-Id",
+    "chora_imda_dimension": "Chora-Imda-Dimension",
+    "imda_lifecycle_stage": "Chora-Imda-Lifecycle-Stage",
+    "schema_version": "Chora-Schema-Version",
+    "occurred_at": "Chora-Occurred-At",
+    "published_at": "Chora-Published-At",
+    "traceparent": "Traceparent",
+    "tracestate": "Tracestate",
+}
+
 
 class NatsPublisher:
     """Publishes a single ``OutboxRow`` to its topic via NATS JetStream.
@@ -58,7 +82,11 @@ class NatsPublisher:
         if data is None:
             data = row.payload
 
-        ack = await self._client.publish(row.topic, data, headers=attributes)
+        ack = await self._client.publish(
+            row.topic,
+            data,
+            headers={_ENVELOPE_HEADER_NAMES.get(k, k): v for k, v in attributes.items()},
+        )
         return f"{ack.stream}-{ack.seq}"
 
 

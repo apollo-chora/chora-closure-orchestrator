@@ -124,7 +124,7 @@ class TestPublishOutboxRow:
         assert m.saga_id == "d42940c4-3edf-4a3e-83ed-938c5fef4401"
         assert list(m.participating_domains) == ["creation", "consumption"]
         # The envelope (incl. the just-stamped published_at) rode along.
-        assert m.envelope.event_id == _headers["event_id"]
+        assert m.envelope.event_id == _headers["Chora-Event-Id"]
         assert m.envelope.published_at.ToJsonString().endswith("Z")
 
     @pytest.mark.asyncio
@@ -155,18 +155,19 @@ class TestPublishOutboxRow:
         await pub.publish(_row())
 
         _subject, _data, headers = client.published[0]
-        # All 10 mandatory envelope fields present
+        # All 10 mandatory envelope fields present, under the canonical names
+        # the Go eventbus reads.
         for required in (
-            "event_id",
-            "idempotency_key",
-            "tenant_id",
-            "gcid",
-            "occurred_at",
-            "traceparent",
-            "tracestate",
-            "source_project",
-            "source_service",
-            "schema_version",
+            "Chora-Event-Id",
+            "Chora-Idempotency-Key",
+            "Chora-Tenant-Id",
+            "Chora-Gcid",
+            "Chora-Occurred-At",
+            "Traceparent",
+            "Tracestate",
+            "Chora-Source-Project",
+            "Chora-Source-Service",
+            "Chora-Schema-Version",
         ):
             assert required in headers, f"header missing: {required}"
 
@@ -181,7 +182,7 @@ class TestPublishOutboxRow:
         await pub.publish(_row(tenant_id="01970000-0000-7000-8000-000000000001"))
         await pub.publish(_row(tenant_id="01970000-0000-7000-8000-000000000002"))
 
-        tenants = [h["tenant_id"] for _, _, h in client.published]
+        tenants = [h["Chora-Tenant-Id"] for _, _, h in client.published]
         assert tenants == [
             "01970000-0000-7000-8000-000000000001",
             "01970000-0000-7000-8000-000000000002",
@@ -237,11 +238,11 @@ class TestGoSubscriberAttributeContract:
         await pub.publish(row)
         _subject, _data, headers = client.published[0]
         assert headers["topic"] == "chora.identity.pii.pseudonymise.requested.v1"
-        assert headers.get("published_at"), "published_at header required"
+        assert headers.get("Chora-Published-At"), "published_at header required"
         # RFC3339-parseable (Go time.RFC3339Nano)
         import datetime as _dt
 
-        _dt.datetime.fromisoformat(headers["published_at"])
+        _dt.datetime.fromisoformat(headers["Chora-Published-At"])
 
     @pytest.mark.asyncio
     async def test_existing_published_at_not_overwritten(self) -> None:
@@ -262,4 +263,4 @@ class TestGoSubscriberAttributeContract:
         )
         await pub.publish(row)
         _subject, _data, headers = client.published[0]
-        assert headers["published_at"] == "2026-05-12T08:00:01+00:00"
+        assert headers["Chora-Published-At"] == "2026-05-12T08:00:01+00:00"
