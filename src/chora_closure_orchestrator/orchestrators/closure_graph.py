@@ -39,7 +39,6 @@ from chora_closure_orchestrator.adapter.kms import KMSClient
 from chora_closure_orchestrator.adapter.repository.port import CoordinatorRepository
 from chora_closure_orchestrator.domain.closure import (
     REQUIRED_DOMAINS,
-    Coordinator,
     CoordinatorError,
     NewParams,
     State,
@@ -609,8 +608,3 @@ __all__ = [
     "pseudonymise_fanout_node",
     "request_node",
 ]
-
-
-# Forward-reference fix for type hints
-def _unused() -> Coordinator:  # pragma: no cover
-    raise NotImplementedError
