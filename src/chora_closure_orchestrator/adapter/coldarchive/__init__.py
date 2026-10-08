@@ -10,7 +10,7 @@ for Google Cloud Storage).
 2. Compose into a single archive bundle (JSONL + manifest)
 3. Encrypt with the per-user DEK (under the master KEK)
 4. Write to ``{bucket}/{tenant}/{gcid}/{closure_id}.tar.gz.enc``
-5. Record retention end + emit ``chora.closure.archive_complete.v1``
+5. Record retention end — no event is emitted
 
 Tests use the in-memory adapter; the deployed topology swaps in
 ``MinioColdArchiveClient``.

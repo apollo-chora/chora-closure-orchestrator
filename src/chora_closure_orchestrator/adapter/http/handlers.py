@@ -19,7 +19,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Path, Request
+from fastapi import FastAPI, Path, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -230,8 +230,11 @@ def build_app(
     ) -> JSONResponse:
         try:
             c = await app.state.adapters.repo.get(closure_id)
-        except ErrSagaNotFound as exc:
-            raise HTTPException(status_code=404, detail="saga not found") from exc
+        except ErrSagaNotFound:
+            return JSONResponse(
+                {"code": "CLOSURE_SAGA_NOT_FOUND", "message": "saga not found"},
+                status_code=404,
+            )
 
         try:
             c.cancel(body.reason, body.actor_gcid)
@@ -266,8 +269,11 @@ def build_app(
     ) -> JSONResponse:
         try:
             c = await app.state.adapters.repo.get(closure_id)
-        except ErrSagaNotFound as exc:
-            raise HTTPException(status_code=404, detail="saga not found") from exc
+        except ErrSagaNotFound:
+            return JSONResponse(
+                {"code": "CLOSURE_SAGA_NOT_FOUND", "message": "saga not found"},
+                status_code=404,
+            )
         return JSONResponse(
             StatusResponse(
                 saga_id=c.saga_id,
