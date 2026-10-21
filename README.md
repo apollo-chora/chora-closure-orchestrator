@@ -130,10 +130,12 @@ and checkpointer path, and `CHORA_AI_KERNEL_PG_DSN` for the live kernel adapters
 **One inconsistency to know about.** `adapter/secrets/resolver.py` documents
 `CHORA_CLOSURE_PG_DSN` as the **`chora_identity`** DSN, but `compose.yml` points it
 at `chora_ai_kernel` — the same database the kernel DSN uses. The stack therefore
-runs both paths against one database, which is a deliberate simplification or a
-drift depending on who you ask; the code comment and the Compose value disagree.
-Deploying outside the stack, either give the saga its own database as the resolver
-intends, or share one knowingly.
+runs both paths against one database. Compose states the intent explicitly
+(`# Shares the chora_ai_kernel database by design: its saga state lives in …`), so
+treat the shared database as deliberate and the resolver docstring as the stale
+half. Deploying outside the stack, either give the saga its own database as the
+resolver intends, or share one knowingly — but do not read the docstring as the
+deployment contract.
 
 It also sets `CHORA_NATS_URL`,
 `CHORA_SOURCE_PROJECT`, the four `CHORA_MINIO_*` values (against
